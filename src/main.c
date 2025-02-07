@@ -22,23 +22,21 @@
 #include <stdint.h>
 #include <time.h>
 #define INET_ADDR(o1, o2, o3, o4) (htonl(o1 << 24 | o2 << 16 | o3 << 8 | o4))
-#define TARGETS_LEN 100
-#define TARGETS_TOTAL 100
-#define TIMEOUT_SEC 5
+#define TARGETS_TOTAL 1000
+#define TIMEOUT_SEC 1
 #define TIMEOUT_USEC 0
 #define ADDR_LEN 20
-#define USAGE "Usage: scanner port [per-scan] [total-scan] [timeout-msec]\n" \
+#define USAGE "Usage: scanner port [total-scan] [timeout-msec]\n" \
 		      "port         - target port (1 - 65'535)\n" \
-		      "per-scan     - how many IPs to ping per scan (1 - 10'000)\n" \
-		      "total-scan   - how many IPs to scan in total (min 1)\n" \
-		      "timeout-msec - ping timeout in milliseconds (min 1)"
+		      "total-scan   - how many IPs to scan in total (default 1000)\n" \
+		      "timeout-msec - ping timeout in milliseconds (default 1000)"
 #define MIN(a,b) ((a) < (b) ? a : b)
 
 typedef uint32_t ipv4_t;
 ipv4_t get_random_ip();
 void rand_init(void);
 uint32_t rand_next(void);
-int scanner(uint16_t, int, int, long, long);
+int scanner(uint16_t, int, long, long);
 
 struct conn_info {
 	SOCKET client_sockfd;
@@ -54,7 +52,6 @@ int main(int argc, char** argv) {
 	}
 
 	uint16_t port = 0;
-	int      per_scan = TARGETS_LEN;
 	int      total_scan = TARGETS_TOTAL;
 	long     timeout_sec = TIMEOUT_SEC;
 	long     timeout_usec = TIMEOUT_USEC;
@@ -66,18 +63,8 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 	port = p;
-
 	if (argc >= 3) {
 		p = strtol(argv[2], NULL, 10);
-		if (p > 10000 || p < 1) {
-			printf("invalid per-scan\n");
-			printf(USAGE);
-			return 1;
-		}
-		per_scan = p;
-	}
-	if (argc >= 4) {
-		p = strtol(argv[3], NULL, 10);
 		if (p < 1) {
 			printf("invalid total-scan\n");
 			printf(USAGE);
@@ -85,8 +72,8 @@ int main(int argc, char** argv) {
 		}
 		total_scan = p;
 	}
-	if (argc >= 5) {
-		p = strtol(argv[4], NULL, 10);
+	if (argc >= 4) {
+		p = strtol(argv[3], NULL, 10);
 		if (p < 1) {
 			printf("invalid timeout-msec\n");
 			printf(USAGE);
@@ -109,13 +96,14 @@ int main(int argc, char** argv) {
 	}
 #endif
 
-	printf("port                    - %hu\n"
-		"IPs per scan            - %d\n"
+	printf(
+	    "port                    - %hu\n"
 		"total to scan           - %d\n"
-		"timeout in milliseconds - %ld\n--\n",
-		port, per_scan, total_scan, timeout_sec * 1000 + timeout_usec / 1000);
+		"timeout in milliseconds - %ld\n"
+		"scan per cycle          - %d\n--\n",
+		port, total_scan, timeout_sec * 1000 + timeout_usec / 1000, FD_SETSIZE);
 	clock_t t0 = clock();
-	int connected = scanner(port, per_scan, total_scan, timeout_sec, timeout_usec);
+	int connected = scanner(port, total_scan, timeout_sec, timeout_usec);
 	clock_t t1 = clock() - t0;
 	printf("total/replied - %d/%d\n"
 		"time taken    - %.2fs", total_scan, connected, (float)t1 / CLOCKS_PER_SEC);
@@ -126,9 +114,9 @@ int main(int argc, char** argv) {
 	return 0;
 }
 
-int scanner(uint16_t port, int per, int total, long timeout_sec, long timeout_usec) {
+int scanner(uint16_t port, int total, long timeout_sec, long timeout_usec) {
 	int scanned = 0, connected = 0;
-	struct conn_info* targets = calloc(per, sizeof(struct conn_info));
+	struct conn_info* targets = calloc(FD_SETSIZE, sizeof(struct conn_info));
 	if (!targets) {
 		fprintf(stderr, "[scanner] calloc() failed\n");
 		return -1;
@@ -140,7 +128,7 @@ int scanner(uint16_t port, int per, int total, long timeout_sec, long timeout_us
 		size_t i;
 		fd_set write;
 		FD_ZERO(&write);
-		const int count = MIN(per, total - scanned);
+		const int count = MIN(FD_SETSIZE, total - scanned);
 		scanned += count;
 		for (i = 0; i < count; ++i) {
 			struct conn_info* target = &targets[i];
@@ -149,7 +137,7 @@ int scanner(uint16_t port, int per, int total, long timeout_sec, long timeout_us
 			int arg = 1;
 			if (ioctlsocket(sockfd, FIONBIO, &arg) != 0) {
 				fprintf(stderr, "[scanner] ioctlsocket() failed - %d\n", GET_ERROR());
-				for (int i = 0; i < per; ++i)
+				for (int i = 0; i < FD_SETSIZE; ++i)
 					CLOSE_SOCKET(targets[i].client_sockfd);
 				free(targets);
 				return -1;
